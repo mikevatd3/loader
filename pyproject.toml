@@ -17,7 +17,7 @@ GeoAlchemy = "^0.7.2"
 psycopg2 = "^2.9.9"
 click = "^8.1.7"
 returns = "^0.23.0"
-metadata = {path = "/home/michael/projects/new/system/tools/metadata", develop = true}
+metadata = {git = "https://github.com/mikevatd3/metadata_collector" }
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.3.2"

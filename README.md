@@ -1,3 +1,2 @@
-# World Cities dataset from Kaggle 
+# D3 ETL wrapper
 
-Picked this up for spell checking the Assessors Parcel file
