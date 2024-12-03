@@ -3,6 +3,7 @@ from enum import Enum, auto
 import logging
 from pathlib import Path
 import pandas as pd
+import pandera as pa
 import geopandas as gpd
 import click
 from returns.result import Success, Failure
@@ -18,6 +19,7 @@ class LoadFileType(Enum):
     GEOJSON = auto()
     CSV = auto()
     PARQUET = auto()
+    JSON = auto()
 
 
 class StopThePresses(Exception):
@@ -33,7 +35,11 @@ def build_workflow(
     working_dir: Path,
     cleanup_function: Callable[[gpd.GeoDataFrame | pd.DataFrame], gpd.GeoDataFrame | pd.DataFrame], 
     db_engine: Engine,
-    filetype: LoadFileType = LoadFileType.GEOJSON
+    filetype: LoadFileType = LoadFileType.GEOJSON,
+    preload: Callable[[Path], pd.DataFrame] | None = None,
+    mute_metadata: bool = False,
+    delimiter: str | None = None,
+    schema: pa.DataFrameSchema | None = None
 ):
 
     @click.command()
@@ -41,33 +47,57 @@ def build_workflow(
     @click.argument("start_date")
     @click.option("-s", "--skip-metadata", is_flag=True, help="Skip metadata intake process")
     @click.option("-m", "--metadata-only", is_flag=True, help="Skip file load-in and only collect metadata")
-    def workflow(file_name: str, start_date: str, skip_metadata: bool, metadata_only: bool):
+    @click.option("-ev", "--use-editor", is_flag=True, help="Use default editor to enter in descriptions")
+    def workflow(file_name: str, start_date: str, skip_metadata: bool, metadata_only: bool, use_editor: bool):
         logger = logging.getLogger(config["app"]["name"])
 
         # Check if this is a new dataset, and start prompt workflow if so.
         logger.info(f"Opening {file_name}")
+
+        filepath = working_dir / "raw" / file_name
         try:
-            match filetype:
-                case LoadFileType.CSV:
-                    raw_file = pd.read_csv(working_dir / "raw" / file_name)
+            if preload:
+                """
+                A pre load function allows you to open the file however you want
+                and return the dataframe -- this is useful for files that aren't 
+                structured in a way that can be immediately opened with pandas.
+                """
+                raw_file = preload(filepath)
 
-                case LoadFileType.GEOJSON:
-                    raw_file = gpd.read_file(working_dir / "raw" / file_name)
+            else:
+                match filetype:
+                    case LoadFileType.CSV:
+                        if delimiter:
+                            raw_file = pd.read_csv(filepath, delimiter=delimiter)
+                        else:
+                            raw_file = pd.read_csv(filepath)
 
-                case LoadFileType.PARQUET:
-                    raw_file = pd.read_parquet(working_dir / "raw" / file_name)
+                    case LoadFileType.GEOJSON:
+                        raw_file = gpd.read_file(filepath)
 
-        except FileNotFoundError:
-            logger.error(
-                f"The file you're trying to open, {file_name} doesn't exist"
-            )
-            return Failure(f"{file_name}, doesn't exist")
+                    case LoadFileType.PARQUET:
+                        raw_file = pd.read_parquet(filepath)
+
+                    case LoadFileType.JSON:
+                        raw_file = pd.read_json(filepath)
+
+        except (FileNotFoundError, StopThePresses) as e:
+            match e:
+                case FileNotFoundError():
+                    logger.error(
+                        f"The file you're trying to open, {file_name} doesn't exist"
+                    )
+                    return Failure(f"{file_name}, doesn't exist")
+                case StopThePresses():
+                    logger.error("Presses were stopped in preload function.")
+                    return Failure("Presses were stopped in preload function.")
 
         # If the file is a new dataset, prompt for descriptions for every column
         # Check also if datatype that is reported by pandas is good.
 
         logger.info(f"Starting cleaning process.")
         try:
+            ### This is where the work from the dataset-specific file is ran
             cleaned = cleanup_function(raw_file)
         except StopThePresses:
             logger.info("'StopThePresses' was raised, so the presses were stopped.")
@@ -87,7 +117,7 @@ def build_workflow(
                     / f"{destination_table}_{iso_today}.parquet.gzip"
                 )
                 match filetype:
-                    case LoadFileType.CSV | LoadFileType.PARQUET:
+                    case LoadFileType.CSV | LoadFileType.PARQUET | LoadFileType.JSON:
                         cleaned.to_sql(
                             destination_table,
                             db_engine,
@@ -117,9 +147,9 @@ def build_workflow(
 
             logger.info(f"{file_name} was pushed to the database {start_date}")
 
-        if not skip_metadata:
+        if not (skip_metadata or mute_metadata):
             logger.info(f"Starting metadata logging process.")
-            meta_handler = RegistrationHandler(file_name, cleaned, config)
+            meta_handler = RegistrationHandler(file_name, cleaned, config, vim_edit=use_editor)
             meta_handler.run_complete_workflow()
         else:
             logger.info(f"Skip metadata selected, so no metadata will be logged.")
