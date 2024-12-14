@@ -3,7 +3,7 @@ from sqlalchemy import create_engine
 import tomli
 
 # Walk out the the module base path
-config_path = Path(__file__).parent.parent / "config.toml"
+config_path = Path.cwd() / "config.toml"
 
 with open(config_path, "rb") as f:
     app_config = tomli.load(f)
